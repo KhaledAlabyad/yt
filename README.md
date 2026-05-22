@@ -14,7 +14,8 @@ yt-clean-url      strips tracking params & playlist noise  →  clean URL
 yt-info           fetches metadata via yt-dlp              →  JSON
  │
  ├─ playlist? ──► yt-select   interactive picker (stderr/tty)  →  "1,3,5-8"
- │
+ │                                                                   │
+ │                                                                   ▼
  └─ video? ──────────────────────────────────────────────────────────┐
                                                                      ▼
                                                            yt-download   →  JSON {output_dir, files}
