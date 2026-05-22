@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""
+yt-post --json-file PATH
+  Reads download result JSON from a file (produced by yt-download).
+  Presents an interactive post-download menu.
+"""
+import sys
+import os
+import json
+import argparse
+import subprocess
+
+
+def open_with_mpv(path: str) -> None:
+    """Launch mpv fully detached — silent, no waiting."""
+    subprocess.Popen(
+        ["mpv", path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def open_with_yazi(folder: str) -> None:
+    """Run yazi in the current terminal."""
+    if not os.path.isdir(folder):
+        folder = os.path.dirname(folder)
+    try:
+        subprocess.run(["yazi", folder])
+    except FileNotFoundError:
+        print("yazi not found — is it installed?", file=sys.stderr)
+
+
+def prompt(msg: str) -> None:
+    print(msg, end="", file=sys.stderr, flush=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json-file", required=True)
+    args = parser.parse_args()
+
+    with open(args.json_file, encoding="utf-8") as f:
+        data = json.load(f)
+    output_dir: str = data["output_dir"]
+    files: list[str] = data["files"]
+
+    # stdin is inherited from parent (not piped), so plain input() works fine.
+
+    print(f"\nDownload complete — {len(files)} mp4 file(s) in:\n  {output_dir}",
+          file=sys.stderr)
+
+    while True:
+        print("\nWhat next?", file=sys.stderr)
+        print("  o – Open with mpv", file=sys.stderr)
+        print("  f – Browse folder with yazi", file=sys.stderr)
+        print("  q / Enter – Quit", file=sys.stderr)
+
+        prompt("Choice: ")
+        choice = input().strip().lower()
+
+        if not choice or choice == "q":
+            break
+        elif choice == "o":
+            if not files:
+                print("No mp4 files found.", file=sys.stderr)
+            elif len(files) == 1:
+                open_with_mpv(files[0])
+            else:
+                print(f"{len(files)} files — opening folder instead.", file=sys.stderr)
+                open_with_yazi(output_dir)
+        elif choice == "f":
+            open_with_yazi(output_dir)
+        else:
+            print(f"Unknown: '{choice}'  (o / f / q)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

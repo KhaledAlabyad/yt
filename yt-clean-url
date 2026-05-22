@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""
+yt-clean-url <url>
+  Strips playlist/tracking params from a YouTube URL.
+  Reads URL from argv[1] or stdin.
+  Writes clean URL to stdout.
+"""
+import sys
+from urllib.parse import parse_qs, urlparse
+
+
+def clean(url: str) -> str:
+    if "youtube.com/watch?" in url:
+        video_id = parse_qs(urlparse(url).query).get("v", [""])[0]
+        if not video_id:
+            return url
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return url
+
+
+if __name__ == "__main__":
+    raw = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read().strip()
+    print(clean(raw))

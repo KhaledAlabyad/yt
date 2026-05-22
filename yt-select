@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+yt-select --json-file PATH [--archive PATH]
+  Reads playlist info JSON from a file (produced by yt-info).
+  Interactively prompts the user to pick which videos to download.
+  Writes a comma-separated index string to stdout, e.g. "1,3,5-8".
+  Empty output means "all videos".
+"""
+import sys
+import os
+import json
+import argparse
+
+DEFAULT_ARCHIVE = os.path.expanduser("~/Downloads/yt-dlp/archive.txt")
+
+
+def load_archived_ids(archive_path: str) -> set[str]:
+    if not os.path.exists(archive_path):
+        return set()
+    with open(archive_path, encoding="utf-8") as f:
+        return {
+            parts[1]
+            for line in f
+            if len(parts := line.strip().split()) >= 2
+        }
+
+
+def parse_indices(text: str) -> list[int]:
+    result: set[int] = set()
+    for part in text.replace(".", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = map(int, part.split("-", 1))
+            result.update(range(a, b + 1))
+        else:
+            result.add(int(part))
+    return sorted(result)
+
+
+def prompt(msg: str) -> None:
+    """Print a prompt to stderr (never touches stdout)."""
+    print(msg, end="", file=sys.stderr, flush=True)
+
+
+def warn_already_archived(indices: list[int], entries: list[dict],
+                           archived: set[str]) -> bool:
+    already = [
+        (i, entries[i - 1].get("title", "?"))
+        for i in indices
+        if 1 <= i <= len(entries) and entries[i - 1]
+        and entries[i - 1].get("id") in archived
+    ]
+    if not already:
+        return True
+    print(f"\n{len(already)} selected video(s) already in archive:", file=sys.stderr)
+    for idx, title in already:
+        print(f"  [{idx}] {title}", file=sys.stderr)
+    prompt("Download anyway? (y/n): ")
+    return input().strip().lower() == "y"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", default=DEFAULT_ARCHIVE)
+    parser.add_argument("--json-file", required=True)
+    args = parser.parse_args()
+
+    with open(args.json_file, encoding="utf-8") as f:
+        info = json.load(f)
+    entries: list[dict] = info.get("entries") or []
+    archived = load_archived_ids(args.archive)
+
+    # stdin is inherited from parent (not piped), so plain input() works fine.
+
+    while True:
+        print("\nPlaylist options:", file=sys.stderr)
+        print("  a  – Download all", file=sys.stderr)
+        print("  n  – New only (skip archived)", file=sys.stderr)
+        print("  l  – List videos, then pick by index", file=sys.stderr)
+        print("  or enter indices directly, e.g.  1,3,5-8", file=sys.stderr)
+
+        prompt("\nYour choice: ")
+        choice = input().strip().lower()
+
+        if choice == "a":
+            all_indices = list(range(1, len(entries) + 1))
+            if not warn_already_archived(all_indices, entries, archived):
+                print("Cancelled, try again.", file=sys.stderr)
+                continue
+            print("")   # empty = download all
+            return
+
+        if choice == "n":
+            new = [i for i, e in enumerate(entries, 1)
+                   if e and e.get("id") not in archived]
+            if not new:
+                print("No new videos found.", file=sys.stderr)
+                continue
+            print(f"Found {len(new)} new video(s).", file=sys.stderr)
+            print(",".join(map(str, new)))
+            return
+
+        if choice == "l":
+            print(f"\n{'#':>4}  {'Status':<12}  Title", file=sys.stderr)
+            print("─" * 60, file=sys.stderr)
+            for i, e in enumerate(entries, 1):
+                if e:
+                    status = "[downloaded]" if e.get("id") in archived else "[new]"
+                    print(f"{i:>4}  {status:<12}  {e.get('title', 'Unknown')}",
+                          file=sys.stderr)
+            prompt("\nEnter indices: ")
+            choice = input().strip()
+
+        try:
+            indices = parse_indices(choice)
+        except ValueError:
+            print("Invalid input, try again.", file=sys.stderr)
+            continue
+
+        if not indices:
+            print("No indices entered, try again.", file=sys.stderr)
+            continue
+
+        if not warn_already_archived(indices, entries, archived):
+            print("Cancelled, try again.", file=sys.stderr)
+            continue
+
+        print(",".join(map(str, indices)))
+        return
+
+
+if __name__ == "__main__":
+    main()

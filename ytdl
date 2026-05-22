@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+ytdl <url>
+  Glue script that wires the yt-* modules together:
+
+      yt-clean-url  →  yt-info  →  [yt-select]  →  yt-download  →  yt-post
+
+  Each module is a separate process; data flows through JSON on stdout/stdin.
+  Interactive prompts from yt-select and yt-post use stderr so the data pipes
+  stay uncontaminated.
+"""
+import sys
+import os
+import re
+import json
+import tempfile
+import subprocess
+
+BASE_DIR = os.path.expanduser("~/Downloads/yt-dlp")
+ARCHIVE  = os.path.join(BASE_DIR, "archive.txt")
+HERE     = os.path.dirname(os.path.abspath(__file__))
+PY       = sys.executable
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def tool(name: str) -> list[str]:
+    return [PY, os.path.join(HERE, name)]
+
+
+def run(cmd: list[str], stdin_data: str | None = None) -> str:
+    """Run a non-interactive command, capture stdout, inherit stderr."""
+    result = subprocess.run(
+        cmd,
+        input=stdin_data,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+    return result.stdout.strip()
+
+
+def run_with_json_file(cmd: list[str], json_data: str) -> str:
+    """Pass JSON to a script via a temp file flag instead of stdin.
+    This keeps stdin connected to the terminal so /dev/tty works inside
+    the child — critical for yt-select and yt-post."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write(json_data)
+        tmp = f.name
+    try:
+        result = subprocess.run(
+            cmd + ["--json-file", tmp],
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+        return result.stdout.strip()
+    finally:
+        os.unlink(tmp)
+
+
+def load_archived_ids() -> set[str]:
+    if not os.path.exists(ARCHIVE):
+        return set()
+    with open(ARCHIVE, encoding="utf-8") as f:
+        return {
+            parts[1]
+            for line in f
+            if len(parts := line.strip().split()) >= 2
+        }
+
+
+# ── pipeline ─────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: ytdl <youtube-url>", file=sys.stderr)
+        print("  Tip: quote the URL so '&' isn't treated as shell job control:", file=sys.stderr)
+        print("       python ytdl 'https://youtube.com/watch?v=xxx&list=yyy'", file=sys.stderr)
+        sys.exit(1)
+
+    # Re-join all argv parts: if the URL was unquoted the shell splits on '&'
+    # turning  ?v=x&list=y&index=1  into three separate process arguments.
+    raw_url = "".join(sys.argv[1:])
+
+    if not re.match(r"https?://(www\.)?(youtube\.com|youtu\.be)/", raw_url):
+        print("Error: not a YouTube URL.", file=sys.stderr)
+        sys.exit(1)
+
+    # ── 1. clean URL ─────────────────────────────────────────────────────────
+    url = run([*tool("yt-clean-url"), raw_url])
+    print(f"Processing: {url}")
+
+    # ── 2. fetch metadata ─────────────────────────────────────────────────────
+    print("Fetching metadata…")
+    info_json = run([*tool("yt-info"), url])
+    info: dict = json.loads(info_json)
+
+    # ── 3a. playlist branch ───────────────────────────────────────────────────
+    if info.get("_is_playlist"):
+        items = run_with_json_file(
+            [*tool("yt-select"), "--archive", ARCHIVE],
+            info_json,
+        )
+
+        dl_cmd = [
+            *tool("yt-download"), url,
+            "--archive", ARCHIVE,
+            "--title", info.get("title", "Playlist"),
+        ]
+        if items:
+            dl_cmd += ["--items", items]
+
+        result_json = run(dl_cmd)
+
+    # ── 3b. single video branch ───────────────────────────────────────────────
+    else:
+        archived = load_archived_ids()
+        if info.get("id") in archived:
+            print(f"\nAlready in archive: {info.get('title', '?')}")
+            answer = input("Download anyway? (y/n): ").strip().lower()
+            if answer != "y":
+                print("Cancelled.")
+                return
+
+        result_json = run([
+            *tool("yt-download"), url,
+            "--archive", ARCHIVE,
+        ])
+
+    # ── 4. post-download menu ─────────────────────────────────────────────────
+    run_with_json_file([*tool("yt-post")], result_json)
+
+
+if __name__ == "__main__":
+    main()

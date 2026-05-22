@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""
+yt-info <url>
+  Fetches metadata for a YouTube video or playlist.
+  Reads URL from argv[1] or stdin.
+  Writes JSON to stdout.
+
+  The emitted object always includes:
+    _is_playlist  bool
+    id            str
+    title         str
+  Playlists also include:
+    entries       list[{id, title}]
+"""
+import sys
+import json
+import time
+from urllib.parse import urlparse
+
+import yt_dlp
+
+
+def is_playlist(url: str) -> bool:
+    if "/watch?" in url:
+        return False
+    return "/playlist?" in url or "playlist" in urlparse(url).path
+
+
+def fetch(url: str, retries: int = 5, delay: float = 2.0) -> dict:
+    opts: dict = {"quiet": True, "no_warnings": True}
+    if is_playlist(url):
+        opts["extract_flat"] = True
+
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            info["_is_playlist"] = is_playlist(url)
+            return info
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                print(f"Attempt {attempt + 1} failed, retrying in {delay:.0f}s…", file=sys.stderr)
+                time.sleep(delay)
+                delay *= 2
+
+    raise RuntimeError(f"Failed after {retries} attempts: {last_exc}") from last_exc
+
+
+if __name__ == "__main__":
+    url = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read().strip()
+    try:
+        info = fetch(url)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    json.dump(info, sys.stdout)
+    print()

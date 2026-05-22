@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""
+yt-download <url> [options]
+  Downloads a YouTube video or playlist selection.
+  Writes JSON  {"output_dir": "...", "files": [...]}  to stdout on success.
+
+  --archive PATH   yt-dlp archive file          (default: ~/Downloads/yt-dlp/archive.txt)
+  --dir     PATH   explicit output directory     (default: derived from channel/playlist)
+  --items   STR    playlist_items filter string  e.g. "1,3,5-8"  (playlist only)
+  --title   STR    playlist title used to name the output dir
+"""
+import sys
+import os
+import re
+import glob
+import json
+import argparse
+
+import yt_dlp
+
+BASE_DIR = os.path.expanduser("~/Downloads/yt-dlp")
+DEFAULT_ARCHIVE = os.path.join(BASE_DIR, "archive.txt")
+
+
+# ── stderr logger (keeps stdout clean for JSON output) ───────────────────────
+
+class StderrLogger:
+    """Route all yt-dlp output to stderr so stdout carries only our JSON."""
+    def debug(self, msg: str) -> None:
+        # yt-dlp sends progress lines via debug(); skip the pure [debug] ones
+        if not msg.startswith("[debug]"):
+            print(msg, file=sys.stderr)
+    def info(self, msg: str) -> None:
+        print(msg, file=sys.stderr)
+    def warning(self, msg: str) -> None:
+        print(f"WARNING: {msg}", file=sys.stderr)
+    def error(self, msg: str) -> None:
+        print(f"ERROR: {msg}", file=sys.stderr)
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def sanitize(name: str) -> str:
+    return re.sub(r"[^\w\s-]", "", name).strip() or "Unknown"
+
+
+def cleanup_vtt(directory: str) -> None:
+    for f in glob.glob(os.path.join(directory, "*.vtt")):
+        try:
+            os.remove(f)
+        except OSError as e:
+            print(f"Warning: could not delete {f}: {e}", file=sys.stderr)
+
+
+def resolve_output_dir(url: str, explicit_dir: str | None, title: str | None) -> str:
+    """Return the output directory, fetching channel name only when needed."""
+    if explicit_dir:
+        return explicit_dir
+    if title:
+        return os.path.join(BASE_DIR, sanitize(title))
+    # Single video — need channel name from yt-dlp
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    channel = sanitize(info.get("channel") or info.get("uploader") or "Unknown")
+    return os.path.join(BASE_DIR, channel)
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("url")
+    parser.add_argument("--archive", default=DEFAULT_ARCHIVE)
+    parser.add_argument("--dir", default=None)
+    parser.add_argument("--items", default=None)
+    parser.add_argument("--title", default=None)
+    args = parser.parse_args()
+
+    os.makedirs(BASE_DIR, exist_ok=True)
+    if not os.path.exists(args.archive):
+        open(args.archive, "a").close()
+
+    output_dir = resolve_output_dir(args.url, args.dir, args.title)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Use indexed filenames for playlists, flat names for single videos
+    is_playlist_dl = bool(args.items or args.title)
+    template = "%(playlist_index)s-%(title)s.%(ext)s" if is_playlist_dl else "%(title)s.%(ext)s"
+
+    ydl_opts: dict = {
+        "outtmpl": os.path.join(output_dir, template),
+        "download_archive": args.archive,
+        "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
+        "logger": StderrLogger(),
+    }
+    if args.items:
+        ydl_opts["playlist_items"] = args.items
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([args.url])
+    except Exception as e:
+        print(f"Download error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    cleanup_vtt(output_dir)
+
+    files = sorted(glob.glob(os.path.join(output_dir, "*.mp4")))
+    json.dump({"output_dir": output_dir, "files": files}, sys.stdout)
+    print()
+
+
+if __name__ == "__main__":
+    main()
